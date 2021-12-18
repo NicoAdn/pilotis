@@ -1,0 +1,186 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+
+#include <SoftwareSerial.h>
+#include <RH_RF95.h>
+
+SoftwareSerial ss(D5, D6);    //Initialisation des pins liées au module LoRa Radio
+RH_RF95 rf95(ss);
+
+#define RELAY D1
+
+/*setup du pin et du moniteur serie*/
+
+const char* ssid     = "Nicolas";           //Entrez ici l'identifiant et le mot de passe de la wifi utilisée
+const char* password = "87654321";
+
+const char* host = "api.pushingbox.com";
+const char* devid = "vAB020B9685ED69F";    //Entrez ici le deviceId du téléphone
+
+
+void setup() {
+  Serial.begin(115200); 
+
+  Serial.println("RF95 server test.");
+    
+    if(!rf95.init())
+    {
+        Serial.println("init failed");
+        while(1);
+    } 
+    
+    rf95.setFrequency(868.0);
+  
+    pinMode(RELAY, OUTPUT);
+ 
+    // We start by connecting to a WiFi network
+    Serial.println();
+    Serial.println();
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
+
+    WiFi.begin(ssid, password);
+
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+}
+
+
+void loop() {
+  
+  if(rf95.available()){
+    
+    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+    uint8_t len = sizeof(buf);
+    
+    if(rf95.recv(buf, &len)) {
+
+      Serial.print("got request: ");
+      Serial.println((char*)buf);
+      
+      //Fermeture du relais en cas de détection d'eau
+      digitalWrite(RELAY, HIGH);
+
+      Serial.print("connecting to ");
+      Serial.println(host);
+  
+      // Initialisation de la connexion wifi
+      WiFiClient client;
+      const int httpPort = 80;
+      if (!client.connect(host, httpPort)) {
+          Serial.println("connection failed");
+          return;
+      }
+
+      String message = (char*)buf;
+      String url = "/pushingbox";
+
+      if (message == "filet") {                   //Reception d'un message indiquant la présence d'un filet d'eau 
+            String alert = "Water%20detected";
+
+          
+          String url = "/pushingbox"; //Creation d'une requête URL
+          url += "?devid=";
+          url += devid;
+          url += "&alert=";         //ajout d'une chaîne de caractère décrivant la situation 
+          url += alert;
+          
+          Serial.print("Requesting URL: ");
+          Serial.println(url);
+
+
+          // Envoi d'une requête au serveur PushingBox
+          client.print(String("GET ") + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Connection: close\r\n\r\n");
+
+          
+          unsigned long timeout = millis();
+          while (client.available() == 0) {
+              if (millis() - timeout > 5000) {
+                  Serial.println(">>> Client Timeout !");
+                  client.stop();
+                  return;
+                }
+            }
+      }
+
+      else if (message == "stable") {             //Reception d'un message indiquant que le niveau d'eau est stabilisé 
+            String alert = "Water%20stabilized";
+
+          
+          String url = "/pushingbox";
+          url += "?devid=";
+          url += devid;
+          url += "&alert=";
+          url += alert;
+          
+          Serial.print("Requesting URL: ");
+          Serial.println(url);
+
+
+          
+          client.print(String("GET ") + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Connection: close\r\n\r\n");
+
+          
+          unsigned long timeout = millis();
+          while (client.available() == 0) {
+              if (millis() - timeout > 5000) {
+                  Serial.println(">>> Client Timeout !");
+                  client.stop();
+                  return;
+                }
+            }
+      }
+
+      else {
+
+        String alert = "Water%20level%20at%20"+message+"cm";              //Reception d'un message indiquant que la hauteur d'eau a changée, et donnant cette hauteur 
+        
+        if (message == "3.00") {
+          alert += "%20flooding%20detected";
+        }
+
+      
+    String url = "/pushingbox";
+    url += "?devid=";
+    url += devid;
+    url += "&alert=";
+    url += alert;
+    
+    Serial.print("Requesting URL: ");
+    Serial.println(url);
+
+
+    
+    client.print(String("GET ") + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Connection: close\r\n\r\n");
+
+    
+    unsigned long timeout = millis();
+    while (client.available() == 0) {
+        if (millis() - timeout > 5000) {
+            Serial.println(">>> Client Timeout !");
+            client.stop();
+            return;
+          }
+      }
+      }
+      
+      }
+  
+      Serial.println();
+      Serial.println("closing connection");
+  }
+  
+  else
+    {
+        Serial.println("recv failed");
+    }
+delay(1000);
+}
