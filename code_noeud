@@ -1,0 +1,222 @@
+#include <SoftwareSerial.h>
+#include <RH_RF95.h>
+
+
+SoftwareSerial ss(5, 6);         //Initialisation des pins liées au module LoRa Radio
+RH_RF95 rf95(ss);
+
+
+#include <Wire.h>
+ 
+#ifdef ARDUINO_SAMD_VARIANT_COMPLIANCE
+#define SERIAL SerialUSB
+#else
+#define SERIAL Serial
+#endif
+ 
+unsigned char low_data[8] = {0};
+unsigned char high_data[12] = {0};
+ 
+ 
+#define NO_TOUCH       0xFE
+#define THRESHOLD      100
+#define ATTINY1_HIGH_ADDR   0x78
+#define ATTINY2_LOW_ADDR   0x77
+
+uint8_t trig_section = 0;
+const int PinDetector = 2;
+int ADC_Val = 0;
+boolean isWater = false;
+boolean notWater = false;
+boolean isStabilised = false;
+float lastHauteur = 0;
+float hauteurEau = 0;
+int compteur = 0;
+int tps = 20;
+
+void setup() 
+{    
+    //Liaison série 
+    Serial.begin(115200);
+    Serial.println("RF95 client test.");
+
+    if (!rf95.init())
+    {
+        Serial.println("init failed");
+        while(1);
+    }
+    
+    rf95.setFrequency(868.0);
+    //Setup de la librairie
+    Wire.begin();
+    //Setup de la pin
+    pinMode(PinDetector, INPUT);
+}
+
+void loop() 
+{   
+  if (isStabilised == false) {    
+    ADC_Val=digitalRead(PinDetector); // Lecture filet d'eau
+    
+    //si il y a de l'eau
+    if (ADC_Val == HIGH) {
+      
+      //si l'eau n'était pas détectée avant
+      if (isWater == false) {
+        filetEau();
+      }
+
+      //si l'eau était déja détectée
+      else {
+        
+        //tant que l'eau n'est pas stable depuis un certain temps
+        while (compteur < tps) {
+          niveauEau(); //mesure du niveau d'eau
+
+          //si le niveau d'eau a changé
+          if (hauteurEau != lastHauteur) {
+            lastHauteur = hauteurEau;
+            compteur = 0;
+            messageEau(); //affiche le changement
+          }
+
+          //si le niveau d'eau n'a pas changé
+          else {
+            compteur += 1;
+          }
+          
+          delay(1000);
+        }
+        
+        stabilisation();
+      }
+      
+    }
+
+    //si pas de filet d'eau
+    else if (notWater == false) {
+      pasEau();
+    }
+    
+    delay(1000);
+  }
+}
+
+void getHigh12SectionValue(void)
+{
+  memset(high_data, 0, sizeof(high_data));
+  Wire.requestFrom(ATTINY1_HIGH_ADDR, 12);
+  while (12 != Wire.available());
+ 
+  for (int i = 0; i < 12; i++) {
+    high_data[i] = Wire.read();
+  }
+  delay(10);
+}
+
+void getLow8SectionValue(void)
+{
+  memset(low_data, 0, sizeof(low_data));
+  Wire.requestFrom(ATTINY2_LOW_ADDR, 8);
+  while (8 != Wire.available());
+ 
+  for (int i = 0; i < 8 ; i++) {
+    low_data[i] = Wire.read(); 
+  }
+  delay(10);
+}
+
+void niveauEau() //permet de mesurer le niveau d'eau
+{
+  int sensorvalue_min = 250;
+  int sensorvalue_max = 255;
+  int low_count = 0;
+  int high_count = 0;
+    trig_section = 0;
+    uint32_t touch_val = 0;
+    low_count = 0;
+    high_count = 0;
+    getLow8SectionValue();
+    getHigh12SectionValue();
+    for (int i = 0; i < 8; i++)
+    {
+      if (low_data[i] >= sensorvalue_min && low_data[i] <= sensorvalue_max)
+      {
+        low_count++;
+      }
+    }
+    for (int i = 0; i < 12; i++)
+    {
+      if (high_data[i] >= sensorvalue_min && high_data[i] <= sensorvalue_max)
+      {
+        high_count++;
+      }
+    }
+    for (int i = 0 ; i < 8; i++) {
+      if (low_data[i] > THRESHOLD) {
+        touch_val |= 1 << i;
+      }
+    }
+    for (int i = 0 ; i < 12; i++) {
+      if (high_data[i] > THRESHOLD) {
+        touch_val |= (uint32_t)1 << (8 + i);
+      }
+    }
+    while (touch_val & 0x01)
+    {
+      trig_section++;
+      touch_val >>= 1;
+    }
+    hauteurEau = trig_section * 0.5;
+}
+
+void filetEau() { //affiche un message de détection d'un filet d'eau
+  isWater = true;
+  notWater = false;
+  Serial.println("***************************************");
+  Serial.println("Sending to rf95_server");
+
+  
+  // Send a message to rf95_server
+  
+  String data = "filet";
+  int dataLength = data.length(); dataLength++;
+  uint8_t total[dataLength]; //variable for data to send
+  data.toCharArray(total, dataLength); //change type data from string ke uint8_t
+  Serial.println(data);
+  rf95.send(total, dataLength); //send data
+  rf95.waitPacketSent();
+}
+
+void pasEau() { //affiche un message de non-détection de filet d'eau
+  isWater = false;
+  notWater = true;
+  Serial.println("***************************************");
+  Serial.print("Valeur observée : ");
+  Serial.println(ADC_Val);
+  Serial.println("Pas d'eau détectée");
+}
+
+void messageEau() { //affiche le niveau d'eau relevé
+    Serial.println("*****************Hauteur eau**********************");
+      
+    String data = String(hauteurEau);
+    int dataLength = data.length(); dataLength++;
+    uint8_t total[dataLength]; //variable for data to send
+    data.toCharArray(total, dataLength); //change type data from string ke uint8_t
+    Serial.println(data);
+    rf95.send(total, dataLength); //send data
+    rf95.waitPacketSent();
+}
+
+void stabilisation() { //affiche un message de stabilisation du niveau d'eau
+  isStabilised = true;
+  Serial.println("***************************************");
+  String data = "stable";
+  int dataLength = data.length(); dataLength++;
+  uint8_t total[dataLength]; //variable for data to send
+  data.toCharArray(total, dataLength); //change type data from string ke uint8_t
+  Serial.println(data);
+  rf95.send(total, dataLength); //send data
+  rf95.waitPacketSent();
+}
